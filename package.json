@@ -1,0 +1,121 @@
+{
+    "name": "copilot-tracer",
+    "displayName": "Copilot Tracer",
+    "description": "Track your GitHub Copilot premium request usage — supports Individual, Business, and Enterprise plans with a daily pacing bar in the status bar.",
+    "icon": "icon.png",
+    "version": "1.0.5",
+    "publisher": "sauercherry",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/Skrsch/copilot_tracer_extension.git"
+    },
+    "engines": {
+        "vscode": "^1.90.0"
+    },
+    "categories": [
+        "Other"
+    ],
+    "keywords": [
+        "copilot",
+        "usage",
+        "billing",
+        "tracker",
+        "pacing"
+    ],
+    "activationEvents": [
+        "onStartupFinished"
+    ],
+    "main": "./out/extension.js",
+    "contributes": {
+        "commands": [
+            {
+                "command": "copilot-tracer.setToken",
+                "title": "Copilot Tracer: Set GitHub Token"
+            },
+            {
+                "command": "copilot-tracer.refresh",
+                "title": "Copilot Tracer: Refresh Usage"
+            },
+            {
+                "command": "copilot-tracer.showDetails",
+                "title": "Copilot Tracer: Show Usage Details"
+            },
+            {
+                "command": "copilot-tracer.diagnose",
+                "title": "Copilot Tracer: Diagnose API Access"
+            },
+            {
+                "command": "copilot-tracer.clearToken",
+                "title": "Copilot Tracer: Clear GitHub Token"
+            },
+            {
+                "command": "copilot-tracer.connectGitHub",
+                "title": "Copilot Tracer: Connect GitHub Account"
+            }
+        ],
+        "configuration": {
+            "title": "Copilot Tracer",
+            "properties": {
+                "copilot-tracer.monthlyLimit": {
+                    "type": "number",
+                    "default": 300,
+                    "minimum": 1,
+                    "description": "Your monthly Copilot premium request limit."
+                },
+                "copilot-tracer.username": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Your GitHub username (auto-detected on first run)."
+                },
+                "copilot-tracer.orgName": {
+                    "type": "string",
+                    "default": "",
+                    "description": "GitHub organization name. Required for Business/Enterprise plan users. Leave empty for Individual plans."
+                },
+                "copilot-tracer.planType": {
+                    "type": "string",
+                    "enum": [
+                        "auto",
+                        "individual",
+                        "business"
+                    ],
+                    "enumDescriptions": [
+                        "Auto-detect: try individual API first, fall back to org API if it returns 0",
+                        "GitHub Copilot Individual plan",
+                        "GitHub Copilot Business or Enterprise plan (requires orgName)"
+                    ],
+                    "default": "auto",
+                    "description": "Your Copilot subscription plan type."
+                },
+                "copilot-tracer.refreshIntervalMinutes": {
+                    "type": "number",
+                    "default": 30,
+                    "minimum": 5,
+                    "maximum": 120,
+                    "description": "How often (in minutes) to auto-refresh usage data. Minimum 5 to avoid rate limits."
+                },
+                "copilot-tracer.showInStatusBar": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Show the pacing bar in the status bar."
+                }
+            }
+        }
+    },
+    "scripts": {
+        "vscode:prepublish": "npm run compile",
+        "compile": "tsc -p ./",
+        "watch": "tsc -watch -p ./",
+        "lint": "eslint src --ext ts",
+        "package": "vsce package --no-dependencies"
+    },
+    "devDependencies": {
+        "@types/vscode": "^1.90.0",
+        "@types/node": "^20.0.0",
+        "@typescript-eslint/eslint-plugin": "^7.0.0",
+        "@typescript-eslint/parser": "^7.0.0",
+        "eslint": "^8.57.0",
+        "typescript": "^5.4.0",
+        "@vscode/vsce": "^2.26.0"
+    }
+}
