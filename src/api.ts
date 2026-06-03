@@ -129,6 +129,18 @@ export async function fetchCopilotInternalQuota(
   }
 
   const data = (await response.json()) as Record<string, unknown>;
+  _log(`Raw token response keys: ${Object.keys(data || {}).join(', ')}`);
+  if (data && typeof data.token === 'string') {
+    try {
+      const parts = data.token.split('.');
+      if (parts.length > 1) {
+        const payload = Buffer.from(parts[1], 'base64').toString('utf8');
+        _log(`Decoded Copilot token payload: ${payload}`);
+      }
+    } catch (e) {
+      _log(`Failed to decode token payload: ${e}`);
+    }
+  }
 
   const lq = data?.limited_user_quotas as Record<string, unknown>| undefined;
   if (!lq) {
@@ -216,7 +228,9 @@ export async function fetchCopilotBusinessQuota(
     return null;
   }
 
-  const data = (await response.json()) as {
+  const rawBody = await response.text();
+  _log(`Raw /copilot_internal/user response: ${rawBody}`);
+  const data = JSON.parse(rawBody) as {
     quota_reset_date?: string;
     quota_reset_date_utc?: string;
     quota_snapshots?: {
