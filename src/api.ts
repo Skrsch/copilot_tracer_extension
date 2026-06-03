@@ -136,25 +136,33 @@ export async function fetchCopilotInternalQuota(
     return null;
   }
 
-  const cpi =
-      lq?.copilot_premium_interaction as Record<string, unknown>| undefined;
-  const storage = cpi?.storage as {
-    quota?: number;
-    remaining?: number;
-    used?: number
-  }
-  |undefined;
-  if (!storage || storage.quota === undefined) {
-    _log('No storage.quota found in limited_user_quotas.');
-    return null;
+  // Iterate over keys of limited_user_quotas to find the storage object
+  for (const key of Object.keys(lq)) {
+    const val = lq[key] as Record<string, unknown> | undefined;
+    if (!val) { continue; }
+
+    const storage = val.storage as {
+      quota?: number;
+      remaining?: number;
+      used?: number;
+    } | undefined;
+
+    if (storage && typeof storage.quota === 'number') {
+      const unit = key.toLowerCase().includes('credit') ? 'credits' : 'requests';
+      const resetAt = (val.quota_reset_at as string) ?? (val.reset_at as string) ?? '';
+      _log(`Found quota under limited_user_quotas.${key} (${unit}): used=${storage.used}, remaining=${storage.remaining}, quota=${storage.quota}`);
+      return {
+        used: storage.used ?? (storage.quota - (storage.remaining ?? 0)),
+        remaining: storage.remaining ?? 0,
+        quota: storage.quota,
+        resetAt,
+        unit
+      };
+    }
   }
 
-  return {
-    used: storage.used ?? 0,
-    remaining: storage.remaining ?? 0,
-    quota: storage.quota,
-    resetAt: (cpi?.quota_reset_at as string) ?? '',
-  };
+  _log('No valid quota storage object found under limited_user_quotas.');
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -221,58 +229,111 @@ export async function fetchCopilotBusinessQuota(
     };
   };
 
-  const pi = data?.quota_snapshots?.premium_interactions;
-  if (!pi || pi.unlimited || pi.entitlement === undefined) {
-    _log('No premium_interactions quota found (unlimited or missing).');
+
+  const snapshots = data?.quota_snapshots as Record<string, {
+    entitlement?: number;
+    remaining?: number;
+    quota_remaining?: number;
+    unlimited?: boolean;
+  }> | undefined;
+  if (!snapshots) {
+    _log('No quota_snapshots found.');
     return null;
   }
 
-  const quota = pi.entitlement;
-  const remaining = pi.remaining ?? Math.round(pi.quota_remaining ?? 0);
-  const used = quota - remaining;
+  for (const key of Object.keys(snapshots)) {
+    const pi = snapshots[key];
+    if (pi) {
+      const unit = key.toLowerCase().includes('credit') ? 'credits' : 'requests';
+      const quota = pi.entitlement ?? 0;
+      const remaining = pi.remaining ?? Math.round(pi.quota_remaining ?? 0);
+      const used = quota - remaining;
 
-  _log(`Business quota: used=${used}, remaining=${remaining}, quota=${quota}`);
+      if (pi.unlimited) {
+        _log(`Business quota under quota_snapshots.${key} (${unit}) is UNLIMITED.`);
+        return {
+          used: 0,
+          remaining: Infinity,
+          quota: Infinity,
+          resetAt: data.quota_reset_date_utc ?? data.quota_reset_date ?? '',
+          unit,
+          unlimited: true
+        };
+      } else if (pi.entitlement !== undefined) {
+        _log(`Business quota under quota_snapshots.${key} (${unit}): used=${used}, remaining=${remaining}, quota=${quota}`);
+        return {
+          used,
+          remaining,
+          quota,
+          resetAt: data.quota_reset_date_utc ?? data.quota_reset_date ?? '',
+          unit,
+          unlimited: false
+        };
+      }
+    }
+  }
 
+  _log('No premium_interactions or other valid quota found in quota_snapshots.');
+  return null;
+}
+
+/** Helper to extract Copilot usage and detect whether it uses requests or credits. */
+export function extractUsageFromItems(items?: UsageItem[]): { quantity: number; unit: 'requests' | 'credits' } {
+  if (!items || items.length === 0) {
+    return { quantity: 0, unit: 'requests' };
+  }
+
+  // First, look for any credit-based SKUs
+  const creditItems = items.filter(
+    (i) =>
+      i.sku === 'copilot_ai_credit' ||
+      i.sku === 'copilot_ai_credits' ||
+      i.sku === 'coding_agent_ai_credit' ||
+      i.sku === 'spark_ai_credit' ||
+      (i.sku.toLowerCase().includes('copilot') && i.sku.toLowerCase().includes('credit')) ||
+      i.sku.toLowerCase().includes('ai_credit')
+  );
+
+  if (creditItems.length > 0) {
+    const totalCredits = creditItems.reduce((sum, item) => sum + (item.grossQuantity ?? 0), 0);
+    return { quantity: totalCredits, unit: 'credits' };
+  }
+
+  // Fall back to request-based SKU
+  const requestItem = items.find((i) => i.sku === 'copilot_premium_request');
   return {
-    used,
-    remaining,
-    quota,
-    resetAt: data.quota_reset_date_utc ?? data.quota_reset_date ?? '',
+    quantity: requestItem ? requestItem.grossQuantity : 0,
+    unit: 'requests'
   };
 }
 
 /**
- * Fetches Copilot premium-request usage from the **personal** billing API.
+ * Fetches Copilot billing usage from the **personal** billing API.
  * Works for GitHub Copilot Individual plans.
  * Always returns 0 for Business/Enterprise users.
  */
 export async function fetchPersonalUsage(
     token: string,
     username: string,
-    ): Promise<number> {
+    ): Promise<{ quantity: number; unit: 'requests' | 'credits' }> {
   const url =
       `${GITHUB_API_BASE}/users/${username}/settings/billing/usage/summary`;
   const response = await fetch(url, {headers: buildHeaders(token)});
   await throwOnHttpError(response, url);
 
   const data = (await response.json()) as {usageItems?: UsageItem[]};
-  const item =
-      data.usageItems?.find((i) => i.sku === 'copilot_premium_request');
-  return item ? item.grossQuantity : 0;
+  return extractUsageFromItems(data.usageItems);
 }
 
 /**
- * Fetches Copilot premium-request usage from the **org** billing API.
+ * Fetches Copilot billing usage from the **org** billing API.
  * Requires the token to have Administration:read org permission, and the
  * user must be an org owner or billing manager.
- *
- * Note: notet guaranteed to contain `copilot_premium_request` on all Business
- * plans — org billing tracks seat costs differently from individual quotas.
  */
 export async function fetchOrgBillingUsage(
     token: string,
     orgName: string,
-    ): Promise<number> {
+    ): Promise<{ quantity: number; unit: 'requests' | 'credits' }> {
   // Try legacy usage summary endpoint first
   const url =
       `${GITHUB_API_BASE}/orgs/${orgName}/settings/billing/usage/summary`;
@@ -280,9 +341,7 @@ export async function fetchOrgBillingUsage(
   await throwOnHttpError(response, url);
 
   const data = (await response.json()) as {usageItems?: UsageItem[]};
-  const item =
-      data.usageItems?.find((i) => i.sku === 'copilot_premium_request');
-  return item ? item.grossQuantity : 0;
+  return extractUsageFromItems(data.usageItems);
 }
 
 /**
@@ -397,8 +456,8 @@ export async function resolveUsage(
     planType: 'individual'|'business'|'auto',
     ): Promise<UsageResult> {
   if (planType === 'individual') {
-    const usedRequests = await fetchPersonalUsage(token, username);
-    return {usedRequests, source: 'personal'};
+    const personal = await fetchPersonalUsage(token, username);
+    return {usedRequests: personal.quantity, unit: personal.unit, source: 'personal'};
   }
 
   if (planType === 'business') {
@@ -409,14 +468,14 @@ export async function resolveUsage(
           'Could not determine your GitHub organization. ' +
           'Please set copilot-tracer.orgName in your VS Code settings.');
     }
-    const usedRequests = await fetchOrgBillingUsage(token, resolvedOrg);
-    return {usedRequests, source: 'org', orgName: resolvedOrg};
+    const orgUsed = await fetchOrgBillingUsage(token, resolvedOrg);
+    return {usedRequests: orgUsed.quantity, unit: orgUsed.unit, source: 'org', orgName: resolvedOrg};
   }
 
   // planType === "auto"
   const personal = await fetchPersonalUsage(token, username);
-  if (personal > 0) {
-    return {usedRequests: personal, source: 'personal'};
+  if (personal.quantity > 0) {
+    return {usedRequests: personal.quantity, unit: personal.unit, source: 'personal'};
   }
 
   // Personal returned 0 — try org (Business-plan scenario)
@@ -424,13 +483,13 @@ export async function resolveUsage(
   if (resolvedOrg) {
     try {
       const orgUsed = await fetchOrgBillingUsage(token, resolvedOrg);
-      return {usedRequests: orgUsed, source: 'org', orgName: resolvedOrg};
+      return {usedRequests: orgUsed.quantity, unit: orgUsed.unit, source: 'org', orgName: resolvedOrg};
     } catch {
       // Org API inaccessible (insufficient permissions) — return personal 0
     }
   }
 
-  return {usedRequests: 0, source: 'personal'};
+  return {usedRequests: 0, unit: 'requests', source: 'personal'};
 }
 
 /**

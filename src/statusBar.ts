@@ -5,6 +5,7 @@
 import * as vscode from 'vscode';
 import type {PacingResult} from './types.js';
 import {classifyStatus} from './pacing.js';
+import {buildDeltaExplanation, buildPacingNarrative} from './insights.js';
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -15,14 +16,97 @@ function fmt(n: number): string {
   return Math.round(n).toLocaleString('en-US');
 }
 
-/** Renders a horizontal bar of `width` chars filled proportionally. */
-function renderBar(value: number, maxVal: number, width: number): string {
-  const ratio = Math.max(0, Math.min(1, value / Math.max(maxVal, 1)));
-  const filled = Math.round(ratio * width);
-  return '█'.repeat(filled) + '░'.repeat(width - filled);
+/** Renders a smooth unicode gauge of `width` chars filled proportionally. */
+function gauge(pct: number, width = 20, warn = false, danger = false): string {
+  const p = Math.max(0, Math.min(1, pct));
+  const filled = Math.round(p * width);
+  const empty = width - filled;
+  const block = danger ? '▓' : warn ? '▒' : '█';
+  return block.repeat(filled) + '░'.repeat(empty);
 }
 
-// Thin Unicode separator that renders nicely next to the Copilot icon
+/**
+ * Compact 5-char mini gauge for the status bar text.
+ * Uses fractional block characters for smooth sub-character precision.
+ */
+function miniGauge(pct: number): string {
+  const width = 5;
+  const p = Math.max(0, Math.min(1, pct));
+  const blocks = [' ', '▏', '▎', '▍', '▌', '▋', '▊', '▉'];
+  const totalUnits = width * 8;
+  const filled = Math.round(p * totalUnits);
+  const fullBlocks = Math.floor(filled / 8);
+  const remainder = filled % 8;
+  const emptyBlocks = width - fullBlocks - (remainder > 0 ? 1 : 0);
+  return '▕' +
+      '█'.repeat(fullBlocks) +
+      (remainder > 0 ? blocks[remainder] : '') +
+      '░'.repeat(Math.max(0, emptyBlocks)) +
+      '▏';
+}
+
+/** Friendly time remaining string. */
+function timeLeft(daysRemaining: number): string {
+  if (daysRemaining <= 1) {
+    return 'last day';
+  }
+  if (daysRemaining <= 7) {
+    return `${daysRemaining} days left`;
+  }
+  const weeks = Math.floor(daysRemaining / 7);
+  const days = daysRemaining % 7;
+  return days > 0 ? `${weeks}w ${days}d left` : `${weeks}w left`;
+}
+
+/** Returns a contextual "smart tip" based on usage patterns. */
+function smartTip(result: PacingResult): string {
+  const {
+    banked,
+    baseDailyBudget,
+    avgDailyUsage,
+    remaining,
+    daysRemaining,
+    multiplier,
+    projectedEnd,
+    monthlyLimit,
+    timeOfDayProgress,
+  } = result;
+  // Suppress unused-variable warnings — they're destructured for readability
+  void avgDailyUsage;
+  void remaining;
+
+  if (result.unit === 'credits' && monthlyLimit === 300) {
+    return '$(warning) Using AI Credits with default limit (300). Set `copilot-tracer.monthlyLimit` in settings (e.g., 1,500 for Pro, 7,000 for Pro+, 20,000 for Max).';
+  }
+
+  // End of day and haven't used much — encourage usage
+  if (timeOfDayProgress > 0.75 && avgDailyUsage < baseDailyBudget * 0.5) {
+    return '$(lightbulb) Under-utilizing today — perfect time for complex tasks!';
+  }
+  // Big surplus banked
+  if (banked > baseDailyBudget * 3) {
+    return '$(lightbulb) Large surplus! Consider tackling hard refactors or explorations.';
+  }
+  // Heavily overspent
+  if (banked < -baseDailyBudget * 2) {
+    return '$(lightbulb) Significantly overspent. Try batch-editing or manual coding to recover.';
+  }
+  // Projected to exceed
+  if (projectedEnd > monthlyLimit * 1.1) {
+    return '$(lightbulb) On pace to exceed your quota. Ease off on auto-completions.';
+  }
+  // Under-using consistently
+  if (multiplier > 1.5 && remaining > monthlyLimit * 0.5) {
+    return '$(lightbulb) You have tons of headroom — use Copilot more aggressively!';
+  }
+  // Last few days
+  if (daysRemaining <= 3 && remaining > baseDailyBudget * 3) {
+    return '$(lightbulb) Month almost over with surplus — go all out!';
+  }
+  return '';
+}
+
+// Thin Unicode separator
 const SEP = ' ';
 
 // ---------------------------------------------------------------------------
@@ -112,8 +196,14 @@ export function showError(
 /**
  * Updates the status-bar item with daily-focused pacing data.
  *
- * Status bar:  $(pulse) 20/day ×1.9     (daily allowance + multiplier)
- * Tooltip:     Daily budget report with 3-bar rate comparison
+ * The tooltip is a polished mini-dashboard with:
+ *  - Status headline with icon
+ *  - Quick stats table
+ *  - Visual gauges for quota, time, and today progress
+ *  - Clear rate breakdown (Base Rate vs Allowance vs Actual)
+ *  - Banked/overspent summary & projection
+ *  - Session usage
+ *  - Smart contextual tips
  */
 export function showPacing(
     item: vscode.StatusBarItem,
@@ -122,11 +212,13 @@ export function showPacing(
     _orgName?: string,
     ): void {
   const status = classifyStatus(result);
+  const narrative = buildPacingNarrative(result);
+  const deltaExplanation = buildDeltaExplanation(result);
+
   const {
     dailyAllowance,
     baseDailyBudget,
     avgDailyUsage,
-    multiplier,
     banked,
     remaining,
     monthlyLimit,
@@ -135,134 +227,188 @@ export function showPacing(
     daysRemaining,
     projectedEnd,
     sessionUsed,
+    usedRequests,
     timeOfDayProgress,
   } = result;
 
   const allowance = Math.round(dailyAllowance);
-  const mult = multiplier.toFixed(1);
+  const sessionText =
+      (sessionUsed && sessionUsed > 0) ? ` +${sessionUsed}` : '';
+
+  // Mini bar: 5 chars showing monthly quota consumption
+  const usedPct = usedRequests / Math.max(monthlyLimit, 1);
+  const miniBar = miniGauge(usedPct);
 
   // ---- Status-bar text ----
-  // Hero number: your daily allowance.  Show ×multiplier when notably != 1.
-  const showMult = multiplier >= 1.15 || multiplier <= 0.85;
-  const multText = showMult ? ` (${mult}x)` : '';
-  const sessionText =
-      (sessionUsed && sessionUsed > 0) ? ` (+${sessionUsed})` : '';
-
-  switch (status) {
-    case 'exhausted':
-      item.text = `$(github-copilot)${SEP}0/day${sessionText}`;
-      break;
-    case 'over-budget':
-      item.text = `$(github-copilot)${SEP}${allowance}/day${multText}${
-          sessionText} $(flame)`;
-      break;
-    case 'ahead':
-      item.text = `$(github-copilot)${SEP}${allowance}/day${multText}${
-          sessionText} $(rocket)`;
-      break;
-    default:
-      item.text = `$(github-copilot)${SEP}${allowance}/day${sessionText}`;
-      break;
-  }
-
-  // ---- Colour coding ----
-  switch (status) {
-    case 'exhausted':
-      item.backgroundColor =
-          new vscode.ThemeColor('statusBarItem.errorBackground');
-      item.color = undefined;
-      break;
-    case 'over-budget':
-      item.backgroundColor =
-          new vscode.ThemeColor('statusBarItem.warningBackground');
-      item.color = new vscode.ThemeColor('statusBarItem.warningForeground');
-      break;
-    default:
-      item.backgroundColor = undefined;
-      item.color = undefined;
-      break;
-  }
-
-  // ---- Tooltip (Markdown) — Daily Budget Report ----
-  const barWidth = 20;
-  const maxRate = Math.max(dailyAllowance, baseDailyBudget, avgDailyUsage, 1);
-
-  const budgetBar = renderBar(baseDailyBudget, maxRate, barWidth);
-  const avgBar = renderBar(avgDailyUsage, maxRate, barWidth);
-  const allowanceBar = renderBar(dailyAllowance, maxRate, barWidth);
-
-  // Headline
-  const headline = (() => {
+  if (result.unlimited) {
+    item.text = `$(github-copilot)${SEP}Unlimited${sessionText}`;
+    item.backgroundColor = undefined;
+    item.color = undefined;
+  } else {
     switch (status) {
       case 'exhausted':
-        return `🚫 **Limit reached** — all ${fmt(monthlyLimit)} used`;
+        item.text = `$(github-copilot)${SEP}${miniBar} 0 left`;
+        item.backgroundColor =
+            new vscode.ThemeColor('statusBarItem.errorBackground');
+        item.color = undefined;
+        break;
       case 'over-budget':
-        return `🔥 **Over budget** — daily allowance reduced`;
+        item.text = `$(github-copilot)${SEP}${miniBar} ${allowance}/d${sessionText} $(warning)`;
+        item.backgroundColor =
+            new vscode.ThemeColor('statusBarItem.warningBackground');
+        item.color = new vscode.ThemeColor('statusBarItem.warningForeground');
+        break;
       case 'ahead':
-        return `🚀 **Ahead of schedule!**`;
+        item.text = `$(github-copilot)${SEP}${miniBar} ${allowance}/d${sessionText}`;
+        item.backgroundColor = undefined;
+        item.color = undefined;
+        break;
       default:
-        return `✅ **On track**`;
+        item.text = `$(github-copilot)${SEP}${miniBar} ${allowance}/d${sessionText}`;
+        item.backgroundColor = undefined;
+        item.color = undefined;
+        break;
+    }
+  }
+
+  // ---- Tooltip (MarkdownString) — Mini Dashboard ----
+  const mntUsedPct = usedRequests / Math.max(monthlyLimit, 1);
+  const mntTimePct = dayOfMonth / daysInMonth;
+  const isPaceOver = mntUsedPct > mntTimePct;
+
+  // Status headline
+  const headline = (() => {
+    if (result.unlimited) {
+      return `$(check) **Unlimited Plan** — no monthly quota limits`;
+    }
+    switch (status) {
+      case 'exhausted':
+        return `$(error) **Quota Exhausted** — ${fmt(monthlyLimit)} / ${
+            fmt(monthlyLimit)} used`;
+      case 'over-budget':
+        return `$(warning) **Over Budget** — slow down to recover`;
+      case 'ahead':
+        return `$(rocket) **Ahead of Schedule!** — extra headroom available`;
+      default:
+        return `$(check) **On Track** — pacing is healthy`;
     }
   })();
 
-  // Budget savings/overspend one-liner
   const bankedAbs = Math.round(Math.abs(banked));
-  const bankedLine = banked >= 0 ?
-      `🏦 **+${fmt(bankedAbs)} saved** vs expected` :
-      `🔥 **${fmt(bankedAbs)} over** expected budget`;
 
-  // End-of-month projection
-  const projLine = projectedEnd > monthlyLimit ?
-      `⚠️ Pace: ~${fmt(projectedEnd)} — over limit!` :
-      `📈 Pace: ~${fmt(projectedEnd)} / ${fmt(monthlyLimit)} by month end ✓`;
-
-  // Multiplier context (only when interesting)
-  const multLine = showMult ?
-      `*(${mult}x your base rate — ${
-          multiplier >= 1 ? 'efficiency bonus!' : 'budget pressure'})*` :
-      '';
-
-  const sessionLine = sessionUsed !== undefined ?
-      `⚡ **Session Usage:** ${
-          sessionUsed} requests used since opening VS Code` :
-      '';
-
-  const timeOfDayPct = Math.round(timeOfDayProgress * 100);
-  const timeOfDayLine = `🕒 **Time of Day:** ${timeOfDayPct}% through the day`;
-
-  const md = new vscode.MarkdownString(
-      [
-        `### $(github-copilot) Copilot Daily Budget`,
-        ``,
-        headline,
-        ``,
-        `You have **${allowance}** requests available per remaining day.`,
-        ...(showMult ? [multLine] : []),
-        ``,
-        `📊 **Daily Rates**`,
-        ``,
-        '```text',
-        `base rate  ${budgetBar}  ${baseDailyBudget.toFixed(1)}/day`,
-        `past avg   ${avgBar}  ${avgDailyUsage.toFixed(1)}/day`,
-        `allowance  ${allowanceBar}  ${dailyAllowance.toFixed(1)}/day ◀`,
-        '```',
-        ``,
-        bankedLine,
-        ``,
-        `📅 Day ${dayOfMonth}/${daysInMonth} · ${daysRemaining} days left · ${
-            fmt(Math.round(remaining))} remaining`,
-        timeOfDayLine,
-        ...(sessionUsed !== undefined ? [sessionLine] : []),
-        ``,
-        projLine,
-        ``,
-        `_Click to refresh_`,
-      ].join('\n'),
-      true,
-  );
+  const md = new vscode.MarkdownString('', true);
   md.isTrusted = true;
-  item.tooltip = md;
+  md.supportThemeIcons = true;
+  md.supportHtml = true;
 
+  // ---- Header ----
+  md.appendMarkdown(`### $(github-copilot) Copilot Tracer\n\n`);
+  md.appendMarkdown(`${headline}\n\n`);
+  md.appendMarkdown(`---\n\n`);
+
+  const unitLabel = result.unit === 'credits' ? 'credits' : 'requests';
+
+  // ---- Quick Stats ----
+  md.appendMarkdown(`#### $(pulse) Quick Stats\n\n`);
+  md.appendMarkdown(`| | |\n`);
+  md.appendMarkdown(`|:---|:---|\n`);
+  if (result.unlimited) {
+    md.appendMarkdown(`| **Remaining** | **Unlimited** |\n`);
+    md.appendMarkdown(`| **Today's Budget** | **Unlimited** |\n`);
+  } else {
+    md.appendMarkdown(`| **Remaining** | **${fmt(Math.round(remaining))}** of ${
+        fmt(monthlyLimit)} ${unitLabel} |\n`);
+    md.appendMarkdown(`| **Today's Budget** | **${allowance}** ${unitLabel}/day |\n`);
+  }
+  md.appendMarkdown(`| **Month Progress** | Day ${dayOfMonth} of ${
+      daysInMonth} · ${timeLeft(daysRemaining)} |\n`);
+  if (sessionUsed !== undefined) {
+    md.appendMarkdown(`| **This Session** | ${
+        sessionUsed === 0 ? `No ${unitLabel} yet` :
+                            `**${sessionUsed}** ${unitLabel}`} |\n`);
+  }
+  md.appendMarkdown(`\n`);
+
+  if (!result.unlimited) {
+    // ---- Visual Gauges ----
+    md.appendMarkdown(`#### $(graph) Progress\n\n`);
+    md.appendMarkdown('```\n');
+    md.appendMarkdown(
+        `  Quota  ${gauge(mntUsedPct, 22, isPaceOver, mntUsedPct > 0.9)}  ${
+            Math.round(mntUsedPct * 100)}% used\n`);
+    md.appendMarkdown(`  Time   ${gauge(mntTimePct, 22)}  ${
+        Math.round(mntTimePct * 100)}% elapsed\n`);
+    md.appendMarkdown(`  Day    ${gauge(timeOfDayProgress, 22)}  ${
+        Math.round(timeOfDayProgress * 100)}% of today\n`);
+    md.appendMarkdown('```\n\n');
+
+    // Pace comparison one-liner
+    const paceIcon = isPaceOver ? '$(warning)' : '$(check)';
+    const paceLabel = isPaceOver ?
+        `Using quota **faster** than time is passing` :
+        `Using quota **slower** than time — you're banking ${unitLabel}`;
+    md.appendMarkdown(`${paceIcon} ${paceLabel}\n\n`);
+
+    md.appendMarkdown(`---\n\n`);
+
+    // ---- Rate Breakdown ----
+    md.appendMarkdown(`#### $(list-ordered) Rate Breakdown\n\n`);
+    md.appendMarkdown(`| Metric | Rate | What It Means |\n`);
+    md.appendMarkdown(`|:---|---:|:---|\n`);
+    md.appendMarkdown(`| $(calendar) **Base Rate** | ${
+        baseDailyBudget.toFixed(
+            1)}/day | Quota ÷ days in month *(fixed ceiling)* |\n`);
+    md.appendMarkdown(`| $(arrow-right) **Your Allowance** | ${
+        dailyAllowance.toFixed(
+            1)}/day | Remaining ÷ days left *(your actual budget)* |\n`);
+    md.appendMarkdown(`| $(history) **Your Average** | ${
+        avgDailyUsage.toFixed(
+            1)}/day | How fast you've actually been using |\n\n`);
+
+    // Delta explanation
+    md.appendMarkdown(`> ${deltaExplanation}\n\n`);
+
+    // Banked / Overspent
+    if (bankedAbs > 0) {
+      const bankIcon = banked >= 0 ? '$(verified)' : '$(warning)';
+      const bankLabel = banked >= 0 ?
+          `**+${fmt(bankedAbs)} banked** — saved vs expected schedule` :
+          `**${fmt(bankedAbs)} overspent** — used more than expected`;
+      md.appendMarkdown(`${bankIcon} ${bankLabel}\n\n`);
+    }
+
+    // Projection
+    if (usedRequests > 0) {
+      const projIcon = projectedEnd > monthlyLimit ? '$(warning)' : '$(check)';
+      const projLabel = projectedEnd > monthlyLimit ?
+          `Projected: **~${fmt(projectedEnd)}** — over the ${
+              fmt(monthlyLimit)} limit!` :
+          `Projected: **~${fmt(projectedEnd)}** / ${
+              fmt(monthlyLimit)} by month end`;
+      md.appendMarkdown(`${projIcon} ${projLabel}\n\n`);
+    }
+
+    md.appendMarkdown(`---\n\n`);
+
+    // ---- Smart Tip ----
+    const tip = smartTip(result);
+    if (tip) {
+      md.appendMarkdown(`${tip}\n\n`);
+      md.appendMarkdown(`---\n\n`);
+    }
+  }
+
+  // ---- Guidance ----
+  if (!result.unlimited) {
+    md.appendMarkdown(`$(info) _${narrative.guidance}_\n\n`);
+  }
+
+  // ---- Footer ----
+  const sourceLabel = _source === 'org' && _orgName ? _orgName : _source;
+  md.appendMarkdown(
+      `_$(sync) [Refresh](command:copilot-tracer.refresh) · ${sourceLabel}_\n`);
+
+  item.tooltip = md;
   item.command = 'copilot-tracer.refresh';
   item.show();
 }

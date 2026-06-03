@@ -72,7 +72,7 @@ function isScopeError(err: unknown): boolean {
 
 /** Cached result so we don't call the API more than needed. */
 let lastQuotaResult:
-    {used: number; quota: number; remaining: number; fetchedAt: number;}|null =
+    {used: number; quota: number; remaining: number; fetchedAt: number; unit?: 'requests' | 'credits'}|null =
         null;
 
 /** Minimum milliseconds between actual API calls (5 minutes). */
@@ -103,7 +103,7 @@ async function getExistingGitHubSession():
 }
 
 async function tryGetQuotaFromVSCodeAuth():
-    Promise<{used: number; quota: number; remaining: number}|null> {
+    Promise<{used: number; quota: number; remaining: number; unit?: 'requests' | 'credits'}|null> {
   // Return cached result if it's fresh enough
   if (lastQuotaResult &&
       Date.now() - lastQuotaResult.fetchedAt < MIN_FETCH_INTERVAL_MS) {
@@ -127,7 +127,7 @@ async function tryGetQuotaFromVSCodeAuth():
       ...quota,
       fetchedAt: Date.now(),
     };
-    return {used: quota.used, quota: quota.quota, remaining: quota.remaining};
+    return {used: quota.used, quota: quota.quota, remaining: quota.remaining, unit: quota.unit};
   }
 
   // Individual endpoint returned null — probe Business plan endpoints
@@ -141,7 +141,8 @@ async function tryGetQuotaFromVSCodeAuth():
     return {
       used: bizQuota.used,
       quota: bizQuota.quota,
-      remaining: bizQuota.remaining
+      remaining: bizQuota.remaining,
+      unit: bizQuota.unit
     };
   }
 
@@ -170,7 +171,7 @@ async function refresh(context: vscode.ExtensionContext): Promise<void> {
     // PRIMARY PATH: VS Code built-in GitHub auth + Copilot internal API.
     // Works for Individual, Business, and Enterprise plans with zero config.
     // -----------------------------------------------------------------------
-    let copilotQuota: {used: number; quota: number; remaining: number}|null =
+    let copilotQuota: {used: number; quota: number; remaining: number; unit?: 'requests' | 'credits'}|null =
         null;
     try {
       copilotQuota = await tryGetQuotaFromVSCodeAuth();
@@ -199,8 +200,9 @@ async function refresh(context: vscode.ExtensionContext): Promise<void> {
     }
 
     if (copilotQuota) {
+      const unitLabel = copilotQuota.unit === 'credits' ? 'credits' : 'requests';
       log(`Copilot internal API: used=${copilotQuota.used}, quota=${
-          copilotQuota.quota}, remaining=${copilotQuota.remaining}`);
+          copilotQuota.quota}, remaining=${copilotQuota.remaining}, unit=${copilotQuota.unit}`);
 
       // Use the API's actual quota as the monthly limit (overrides user
       // setting)
@@ -213,16 +215,17 @@ async function refresh(context: vscode.ExtensionContext): Promise<void> {
         sessionStartRequests = copilotQuota.used;
       } else {
         const sessionUsed = copilotQuota.used - sessionStartRequests;
-        if (sessionUsed >= lastNotifiedSessionUsed + 10) {
+        const threshold = copilotQuota.unit === 'credits' ? 100 : 10;
+        if (sessionUsed >= lastNotifiedSessionUsed + threshold) {
           vscode.window.showInformationMessage(`Copilot Tracer: You've used ${
-              sessionUsed} requests this session.`);
+              sessionUsed} ${unitLabel} this session.`);
           lastNotifiedSessionUsed = sessionUsed;
         }
       }
 
       const pacing = calculatePacing(
           copilotQuota.used, monthlyLimit, new Date(), copilotQuota.remaining,
-          sessionStartRequests);
+          sessionStartRequests, copilotQuota.unit);
       showPacing(statusBarItem, pacing, 'copilot-internal');
       log('Status bar updated via Copilot internal API.');
       return;
@@ -266,23 +269,25 @@ async function refresh(context: vscode.ExtensionContext): Promise<void> {
       }
     }
 
-    log(`PAT usage: ${usageResult.usedRequests} requests, source=${
+    log(`PAT usage: ${usageResult.usedRequests} ${usageResult.unit ?? 'requests'}, source=${
         usageResult.source}`);
 
     if (sessionStartRequests === null) {
       sessionStartRequests = usageResult.usedRequests;
     } else {
       const sessionUsed = usageResult.usedRequests - sessionStartRequests;
-      if (sessionUsed >= lastNotifiedSessionUsed + 10) {
+      const threshold = usageResult.unit === 'credits' ? 100 : 10;
+      const unitLabel = usageResult.unit === 'credits' ? 'credits' : 'requests';
+      if (sessionUsed >= lastNotifiedSessionUsed + threshold) {
         vscode.window.showInformationMessage(`Copilot Tracer: You've used ${
-            sessionUsed} requests this session.`);
+            sessionUsed} ${unitLabel} this session.`);
         lastNotifiedSessionUsed = sessionUsed;
       }
     }
 
     const pacing = calculatePacing(
         usageResult.usedRequests, settings.monthlyLimit, new Date(), undefined,
-        sessionStartRequests);
+        sessionStartRequests, usageResult.unit);
     showPacing(statusBarItem, pacing, usageResult.source, usageResult.orgName);
     log('Status bar updated via PAT path.');
 

@@ -3,7 +3,7 @@
     "displayName": "Copilot Tracer",
     "description": "Track your GitHub Copilot premium request usage — supports Individual, Business, and Enterprise plans with a daily pacing bar in the status bar.",
     "icon": "icon.png",
-    "version": "1.0.5",
+    "version": "1.0.7",
     "publisher": "sauercherry",
     "repository": {
         "type": "git",

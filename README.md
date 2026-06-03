@@ -30,25 +30,27 @@ When hovering over the status bar item, you'll see a detailed daily budget repor
 
 ## Features
 
-- **Daily budget pacing** — see exactly how many premium requests you can use per remaining day
-- **Live status bar** — always-visible daily allowance (`20/day`) with a multiplier when you're ahead or behind
-- **Rich tooltip** — hover for a full daily budget report with ASCII bar charts comparing your base rate, average usage, and current allowance
-- **Session counter** — tracks how many requests you've used since opening VS Code (`+12`)
-- **Color-coded status** — green when on track, yellow when over budget, red when exhausted
-- **Auto-refresh** — updates every 30 minutes (configurable) with smart rate-limit handling
-- **Zero config** — works out of the box using your existing VS Code GitHub sign-in
-- **PAT fallback** — optional Personal Access Token path for advanced setups
-- **Diagnostics command** — built-in troubleshooting to verify API access
+- **Usage-based billing & AI Credits support** — automatically detects and formats metrics in `credits` (e.g. AI Credits plans) or legacy `requests`.
+- **Unlimited plan support** — handles unlimited seat-based Business/Enterprise plans gracefully without prompting for login loops.
+- **Daily budget pacing** — see exactly how many premium requests or credits you can use per remaining day.
+- **Live status bar** — always-visible daily allowance (`20/day` or `Unlimited`) with a monthly progress gauge.
+- **Rich tooltip** — hover for a full daily budget report with ASCII bar charts comparing your base rate, past average, and current allowance (automatically customized for unlimited plans).
+- **Session counter** — tracks how many requests or credits you've used since opening VS Code (`+12` or `+150`).
+- **Color-coded status** — green when on track, yellow when over budget, red when exhausted.
+- **Auto-refresh** — updates every 30 minutes (configurable) with smart rate-limit handling.
+- **Zero config** — works out of the box using your existing VS Code GitHub sign-in.
+- **PAT fallback** — optional Personal Access Token path for advanced setups.
+- **Diagnostics command** — built-in troubleshooting to verify API access and raw payload formats.
 
 ## Status Bar States
 
 | State | Appearance | Description |
 |-------|-----------|-------------|
-| On track | `$(github-copilot) 20/day` | You're pacing well within your budget |
-| Ahead | `$(github-copilot) 25/day (1.9x) 🚀` | You've banked extra requests — spend freely |
-| Over budget | `$(github-copilot) 8/day (0.6x) 🔥` | Slow down — you're running hot this month |
-| Exhausted | `$(github-copilot) 0/day` | Monthly limit reached (red background) |
-| Session usage | `$(github-copilot) 20/day (+12)` | 12 requests used this VS Code session |
+| On track | `$(github-copilot) ▕██░░░░▏ 20/d` | Pacing well within your budget |
+| Over budget | `$(github-copilot) ▕████░░▏ 8/d $(warning)` | Running hot this month — slow down |
+| Exhausted | `$(github-copilot) ▕██████▏ 0 left` | Monthly limit reached (red background) |
+| Session usage | `$(github-copilot) ▕██░░░░▏ 20/d +12` | 12 units used in the current VS Code session |
+| Unlimited | `$(github-copilot) Unlimited` | Unlimited plan (no monthly quota limits) |
 
 ## Tooltip — Daily Budget Report
 
@@ -271,7 +273,7 @@ The extension handles GitHub API rate limits gracefully:
 
 ## Session Notifications
 
-Every **10 requests** used in the current VS Code session, a notification pops up to keep you aware of your spending rate. The session counter resets when you close VS Code.
+Every **10 requests** (or **100 credits** on credit-based plans) used in the current VS Code session, a notification pops up to keep you aware of your spending rate. The session counter resets when you close VS Code.
 
 ## Architecture
 

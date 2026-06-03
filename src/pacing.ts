@@ -19,27 +19,55 @@ export function calculatePacing(
     now: Date = new Date(),
     remainingTotal?: number,
     sessionStartRequests?: number,
+    unit?: 'requests'|'credits',
     ): PacingResult {
   const year = now.getFullYear();
   const month = now.getMonth();
   const daysInMonth = new Date(year, month + 1, 0).getDate();
   const dayOfMonth = now.getDate();  // 1-based
 
-  const daysRemaining =
-      Math.max(1, daysInMonth - dayOfMonth + 1);  // incl today
-  const baseDailyBudget = monthlyLimit / daysInMonth;
-  const remaining = remainingTotal !== undefined ? remainingTotal :
-                                                   monthlyLimit - usedRequests;
-  const dailyAllowance = Math.max(0, remaining) / daysRemaining;
-
   // Time of day progress (0.0 at midnight, 0.5 at noon, 0.99 at 11:59 PM)
   const timeOfDayProgress =
       (now.getHours() * 60 + now.getMinutes()) / (24 * 60);
+
+  const daysRemaining =
+      Math.max(1, daysInMonth - dayOfMonth + 1);  // incl today
 
   // Average daily usage so far (including partial current day)
   const effectiveDaysElapsed =
       Math.max(0.1, dayOfMonth - 1 + timeOfDayProgress);
   const avgDailyUsage = usedRequests / effectiveDaysElapsed;
+
+  const sessionUsed = sessionStartRequests !== undefined ?
+      Math.max(0, usedRequests - sessionStartRequests) :
+      undefined;
+
+  if (remainingTotal === Infinity || monthlyLimit === Infinity) {
+    return {
+      usedRequests,
+      monthlyLimit: Infinity,
+      remaining: Infinity,
+      dayOfMonth,
+      daysInMonth,
+      daysRemaining,
+      baseDailyBudget: Infinity,
+      dailyAllowance: Infinity,
+      avgDailyUsage,
+      expectedByNow: 0,
+      banked: 0,
+      multiplier: 1,
+      projectedEnd: 0,
+      timeOfDayProgress,
+      sessionUsed,
+      unit,
+      unlimited: true,
+    };
+  }
+
+  const baseDailyBudget = monthlyLimit / daysInMonth;
+  const remaining = remainingTotal !== undefined ? remainingTotal :
+                                                   monthlyLimit - usedRequests;
+  const dailyAllowance = Math.max(0, remaining) / daysRemaining;
 
   // Expected usage by NOW (smoothly increases throughout the day)
   const expectedByNow = effectiveDaysElapsed * baseDailyBudget;
@@ -49,10 +77,6 @@ export function calculatePacing(
   const projectedEnd = dayOfMonth > 0 ?
       Math.round((usedRequests / effectiveDaysElapsed) * daysInMonth) :
       0;
-
-  const sessionUsed = sessionStartRequests !== undefined ?
-      Math.max(0, usedRequests - sessionStartRequests) :
-      undefined;
 
   return {
     usedRequests,
@@ -70,6 +94,7 @@ export function calculatePacing(
     projectedEnd,
     timeOfDayProgress,
     sessionUsed,
+    unit,
   };
 }
 

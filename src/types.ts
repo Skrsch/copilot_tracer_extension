@@ -23,6 +23,8 @@ export interface UsageResult {
   quotaFromApi?: number;
   /** Exact remaining requests returned by the Copilot API */
   remainingFromApi?: number;
+  unit?: 'requests'|'credits';
+  unlimited?: boolean;
 }
 
 /** Quota data returned by the Copilot internal token API. */
@@ -33,6 +35,8 @@ export interface CopilotQuota {
   quota: number;
   /** ISO timestamp when the quota resets (start of next month) */
   resetAt: string;
+  unit?: 'requests'|'credits';
+  unlimited?: boolean;
 }
 
 export interface PacingResult {
@@ -63,6 +67,8 @@ export interface PacingResult {
   timeOfDayProgress: number;
   /** Requests used in the current VS Code session */
   sessionUsed?: number;
+  unit?: 'requests'|'credits';
+  unlimited?: boolean;
 }
 
 export interface ValidatedSettings {
