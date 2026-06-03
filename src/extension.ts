@@ -72,7 +72,7 @@ function isScopeError(err: unknown): boolean {
 
 /** Cached result so we don't call the API more than needed. */
 let lastQuotaResult:
-    {used: number; quota: number; remaining: number; fetchedAt: number; unit?: 'requests' | 'credits'}|null =
+    {used: number; quota: number; remaining: number; fetchedAt: number; unit?: 'requests' | 'credits'; unlimited?: boolean}|null =
         null;
 
 /** Minimum milliseconds between actual API calls (5 minutes). */
@@ -103,7 +103,7 @@ async function getExistingGitHubSession():
 }
 
 async function tryGetQuotaFromVSCodeAuth():
-    Promise<{used: number; quota: number; remaining: number; unit?: 'requests' | 'credits'}|null> {
+    Promise<{used: number; quota: number; remaining: number; unit?: 'requests' | 'credits'; unlimited?: boolean}|null> {
   // Return cached result if it's fresh enough
   if (lastQuotaResult &&
       Date.now() - lastQuotaResult.fetchedAt < MIN_FETCH_INTERVAL_MS) {
@@ -122,15 +122,21 @@ async function tryGetQuotaFromVSCodeAuth():
   log(`GitHub session obtained (account: ${session.account.label})`);
   // Let RateLimitError propagate — don't swallow it
   const quota = await fetchCopilotInternalQuota(session.accessToken, log);
-  if (quota) {
+  if (quota && quota !== 'try_business') {
     lastQuotaResult = {
       ...quota,
       fetchedAt: Date.now(),
     };
-    return {used: quota.used, quota: quota.quota, remaining: quota.remaining, unit: quota.unit};
+    return {
+      used: quota.used,
+      quota: quota.quota,
+      remaining: quota.remaining,
+      unit: quota.unit,
+      unlimited: quota.unlimited
+    };
   }
 
-  // Individual endpoint returned null — probe Business plan endpoints
+  // Individual endpoint returned null or try_business — probe Business plan endpoints
   log('Primary endpoint has no quota — trying Business plan endpoint…');
   const bizQuota = await fetchCopilotBusinessQuota(session.accessToken, log);
   if (bizQuota) {
@@ -142,7 +148,31 @@ async function tryGetQuotaFromVSCodeAuth():
       used: bizQuota.used,
       quota: bizQuota.quota,
       remaining: bizQuota.remaining,
-      unit: bizQuota.unit
+      unit: bizQuota.unit,
+      unlimited: bizQuota.unlimited
+    };
+  }
+
+  if (quota === 'try_business') {
+    log('No limited quota found on either endpoint, but session is valid. Returning unlimited.');
+    const fallbackUnlimited = {
+      used: 0,
+      remaining: Infinity,
+      quota: Infinity,
+      resetAt: '',
+      unit: 'requests' as const,
+      unlimited: true
+    };
+    lastQuotaResult = {
+      ...fallbackUnlimited,
+      fetchedAt: Date.now(),
+    };
+    return {
+      used: fallbackUnlimited.used,
+      quota: fallbackUnlimited.quota,
+      remaining: fallbackUnlimited.remaining,
+      unit: fallbackUnlimited.unit,
+      unlimited: fallbackUnlimited.unlimited
     };
   }
 
@@ -471,13 +501,18 @@ export function activate(context: vscode.ExtensionContext): void {
                     outputChannel.appendLine(`  ${msg}`);
                 const quota = await fetchCopilotInternalQuota(
                     session.accessToken, diagLog);
-                if (quota) {
+                if (quota && quota !== 'try_business') {
                   outputChannel.appendLine(`Individual quota: used=${
                       quota.used}, remaining=${quota.remaining}, total=${
                       quota.quota}, resets=${quota.resetAt}`);
                 } else {
-                  outputChannel.appendLine(
-                      'Individual endpoint returned null — trying Business endpoint…');
+                  if (quota === 'try_business') {
+                    outputChannel.appendLine(
+                        'Individual endpoint returned 200 OK but limited_user_quotas is missing — trying Business endpoint…');
+                  } else {
+                    outputChannel.appendLine(
+                        'Individual endpoint returned null/error — trying Business endpoint…');
+                  }
                   const bizQuota = await fetchCopilotBusinessQuota(
                       session.accessToken, diagLog);
                   if (bizQuota) {
@@ -486,8 +521,13 @@ export function activate(context: vscode.ExtensionContext): void {
                             bizQuota.remaining}, total=${
                             bizQuota.quota}, resets=${bizQuota.resetAt}`);
                   } else {
-                    outputChannel.appendLine(
-                        'No quota data from either endpoint.');
+                    if (quota === 'try_business') {
+                      outputChannel.appendLine(
+                          'No quota data from either endpoint, but session is valid. Assuming Unlimited Plan.');
+                    } else {
+                      outputChannel.appendLine(
+                          'No quota data from either endpoint.');
+                    }
                   }
                 }
               } else {

@@ -102,7 +102,7 @@ export async function fetchUsername(token: string): Promise<string> {
 export async function fetchCopilotInternalQuota(
     vsCodeToken: string,
     logger?: (msg: string) => void,
-    ): Promise<CopilotQuota|null> {
+    ): Promise<CopilotQuota|'try_business'|null> {
   const _log = logger ?? (() => {});
   const url = `${GITHUB_API_BASE}/copilot_internal/v2/token`;
   const response = await fetch(url, {
@@ -133,7 +133,7 @@ export async function fetchCopilotInternalQuota(
   const lq = data?.limited_user_quotas as Record<string, unknown>| undefined;
   if (!lq) {
     _log('limited_user_quotas is null/missing (Business/Enterprise plan).');
-    return null;
+    return 'try_business';
   }
 
   // Iterate over keys of limited_user_quotas to find the storage object
@@ -162,7 +162,7 @@ export async function fetchCopilotInternalQuota(
   }
 
   _log('No valid quota storage object found under limited_user_quotas.');
-  return null;
+  return 'try_business';
 }
 
 // ---------------------------------------------------------------------------
@@ -236,9 +236,16 @@ export async function fetchCopilotBusinessQuota(
     quota_remaining?: number;
     unlimited?: boolean;
   }> | undefined;
-  if (!snapshots) {
-    _log('No quota_snapshots found.');
-    return null;
+  if (!snapshots || Object.keys(snapshots).length === 0) {
+    _log('No quota_snapshots found. Assuming unlimited plan.');
+    return {
+      used: 0,
+      remaining: Infinity,
+      quota: Infinity,
+      resetAt: data.quota_reset_date_utc ?? data.quota_reset_date ?? '',
+      unit: 'requests',
+      unlimited: true
+    };
   }
 
   for (const key of Object.keys(snapshots)) {
@@ -273,8 +280,15 @@ export async function fetchCopilotBusinessQuota(
     }
   }
 
-  _log('No premium_interactions or other valid quota found in quota_snapshots.');
-  return null;
+  _log('No premium_interactions or other valid quota found in quota_snapshots. Assuming unlimited plan.');
+  return {
+    used: 0,
+    remaining: Infinity,
+    quota: Infinity,
+    resetAt: data.quota_reset_date_utc ?? data.quota_reset_date ?? '',
+    unit: 'requests',
+    unlimited: true
+  };
 }
 
 /** Helper to extract Copilot usage and detect whether it uses requests or credits. */
