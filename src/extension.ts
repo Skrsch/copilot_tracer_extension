@@ -6,6 +6,9 @@
 // ---------------------------------------------------------------------------
 
 import * as vscode from 'vscode';
+import * as http from 'http';
+import * as https from 'https';
+import type {PacingResult} from './types.js';
 
 import {fetchCopilotBusinessQuota, fetchCopilotInternalQuota, InsufficientScopeError, NotFoundError, RateLimitError, resolveUsage, runDiagnostics, TokenExpiredError,} from './api.js';
 import {calculatePacing} from './pacing.js';
@@ -21,6 +24,13 @@ let refreshTimer: ReturnType<typeof setInterval>|undefined;
 let outputChannel: vscode.OutputChannel;
 let sessionStartRequests: number|null = null;
 let lastNotifiedSessionUsed = 0;
+
+let sessionLocalRequestCount = 0;
+let sessionLocalTokenCount = 0;
+let lastPacingResult: PacingResult | null = null;
+let lastPacingSource: 'personal'|'org'|'copilot-internal' = 'personal';
+let lastOrgName: string | undefined = undefined;
+let uiUpdateTimer: ReturnType<typeof setTimeout>|undefined;
 
 /** Writes a timestamped line to the Copilot Tracer output channel. */
 function log(message: string): void {
@@ -201,7 +211,7 @@ async function refresh(context: vscode.ExtensionContext): Promise<void> {
     // PRIMARY PATH: VS Code built-in GitHub auth + Copilot internal API.
     // Works for Individual, Business, and Enterprise plans with zero config.
     // -----------------------------------------------------------------------
-    let copilotQuota: {used: number; quota: number; remaining: number; unit?: 'requests' | 'credits'}|null =
+    let copilotQuota: {used: number; quota: number; remaining: number; unit?: 'requests' | 'credits'; unlimited?: boolean}|null =
         null;
     try {
       copilotQuota = await tryGetQuotaFromVSCodeAuth();
@@ -256,6 +266,18 @@ async function refresh(context: vscode.ExtensionContext): Promise<void> {
       const pacing = calculatePacing(
           copilotQuota.used, monthlyLimit, new Date(), copilotQuota.remaining,
           sessionStartRequests, copilotQuota.unit);
+
+      if (copilotQuota.unlimited) {
+        pacing.sessionUsed = sessionLocalRequestCount;
+        pacing.sessionTokens = sessionLocalTokenCount;
+      } else {
+        pacing.sessionTokens = sessionLocalTokenCount;
+      }
+
+      lastPacingResult = pacing;
+      lastPacingSource = 'copilot-internal';
+      lastOrgName = undefined;
+
       showPacing(statusBarItem, pacing, 'copilot-internal');
       log('Status bar updated via Copilot internal API.');
       return;
@@ -318,6 +340,18 @@ async function refresh(context: vscode.ExtensionContext): Promise<void> {
     const pacing = calculatePacing(
         usageResult.usedRequests, settings.monthlyLimit, new Date(), undefined,
         sessionStartRequests, usageResult.unit);
+
+    if (usageResult.unlimited) {
+      pacing.sessionUsed = sessionLocalRequestCount;
+      pacing.sessionTokens = sessionLocalTokenCount;
+    } else {
+      pacing.sessionTokens = sessionLocalTokenCount;
+    }
+
+    lastPacingResult = pacing;
+    lastPacingSource = usageResult.source;
+    lastOrgName = usageResult.orgName;
+
     showPacing(statusBarItem, pacing, usageResult.source, usageResult.orgName);
     log('Status bar updated via PAT path.');
 
@@ -394,6 +428,7 @@ export function activate(context: vscode.ExtensionContext): void {
   outputChannel = vscode.window.createOutputChannel('Copilot Tracer');
   context.subscriptions.push(outputChannel);
   log('Extension activating…');
+  setupRequestInterceptor();
 
   // Create the status-bar item — placed just to the right of middle
   statusBarItem = vscode.window.createStatusBarItem(
@@ -593,3 +628,125 @@ export function deactivate(): void {
     clearInterval(refreshTimer);
   }
 }
+
+// ---------------------------------------------------------------------------
+// Real-time Copilot Request & Token Interception
+// ---------------------------------------------------------------------------
+
+function updateStatusBarUI(): void {
+  if (statusBarItem && lastPacingResult) {
+    if (lastPacingResult.unlimited) {
+      lastPacingResult.sessionUsed = sessionLocalRequestCount;
+      lastPacingResult.sessionTokens = sessionLocalTokenCount;
+    } else {
+      lastPacingResult.sessionTokens = sessionLocalTokenCount;
+    }
+    showPacing(statusBarItem, lastPacingResult, lastPacingSource, lastOrgName);
+  }
+}
+
+function triggerImmediateUIUpdate(): void {
+  if (uiUpdateTimer !== undefined) {
+    clearTimeout(uiUpdateTimer);
+  }
+  uiUpdateTimer = setTimeout(() => {
+    updateStatusBarUI();
+  }, 100);
+}
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
+function setupRequestInterceptor(): void {
+  try {
+    const interceptRequest = (originalRequest: any) => {
+      return function (this: any, ...args: any[]) {
+        const arg1 = args[0];
+        const arg2 = args[1];
+
+        let host = '';
+        let path = '';
+
+        if (typeof arg1 === 'string') {
+          try {
+            const url = new URL(arg1);
+            host = url.host || url.hostname || '';
+            path = url.pathname + url.search;
+          } catch {
+            host = arg1;
+          }
+        } else if (arg1 && typeof arg1 === 'object') {
+          if (arg1 instanceof URL) {
+            host = arg1.host || arg1.hostname || '';
+            path = arg1.pathname + arg1.search;
+          } else {
+            host = arg1.host || arg1.hostname || (arg1.headers && arg1.headers.host) || '';
+            path = arg1.path || arg1.pathname || '';
+          }
+        }
+
+        if (!host && arg2 && typeof arg2 === 'object') {
+          host = arg2.host || arg2.hostname || (arg2.headers && arg2.headers.host) || '';
+          path = arg2.path || arg2.pathname || '';
+        }
+
+        const hostLower = host.toLowerCase();
+        const pathLower = path.toLowerCase();
+
+        // Intercept standard Copilot completions and chat requests
+        const isCopilot = (
+          (hostLower.includes('copilot') && !hostLower.includes('telemetry') && !pathLower.includes('telemetry')) ||
+          hostLower.includes('githubcopilot.com')
+        ) && !pathLower.includes('billing') && !pathLower.includes('copilot_internal');
+
+        if (isCopilot) {
+          sessionLocalRequestCount++;
+          triggerImmediateUIUpdate();
+        }
+
+        const req = originalRequest.apply(this, args);
+
+        if (isCopilot) {
+          const originalEmit = req.emit;
+          req.emit = function (this: any, event: string, ...emitArgs: any[]) {
+            if (event === 'response') {
+              const res = emitArgs[0];
+              if (res) {
+                let bodyBuffer = '';
+                res.on('data', (chunk: any) => {
+                  try {
+                    bodyBuffer += chunk.toString();
+                    if (bodyBuffer.length > 5000) {
+                      bodyBuffer = bodyBuffer.slice(-2500);
+                    }
+                  } catch {}
+                });
+
+                res.on('end', () => {
+                  try {
+                    const match = bodyBuffer.match(/"total_tokens"\s*:\s*(\d+)/);
+                    if (match) {
+                      const tokens = parseInt(match[1], 10);
+                      if (!isNaN(tokens) && tokens > 0) {
+                        sessionLocalTokenCount += tokens;
+                        triggerImmediateUIUpdate();
+                      }
+                    }
+                  } catch {}
+                });
+              }
+            }
+            return originalEmit.apply(this, emitArgs);
+          };
+        }
+
+        return req;
+      };
+    };
+
+    (http as any).request = interceptRequest(http.request);
+    (https as any).request = interceptRequest(https.request);
+    log('Global Copilot request interceptor installed.');
+  } catch (err) {
+    log(`Failed to setup request interceptor: ${err}`);
+  }
+}
+/* eslint-enable @typescript-eslint/no-explicit-any */

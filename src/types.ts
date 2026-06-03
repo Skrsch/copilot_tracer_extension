@@ -67,6 +67,8 @@ export interface PacingResult {
   timeOfDayProgress: number;
   /** Requests used in the current VS Code session */
   sessionUsed?: number;
+  /** Tokens used in the current VS Code session (tracked locally) */
+  sessionTokens?: number;
   unit?: 'requests'|'credits';
   unlimited?: boolean;
 }

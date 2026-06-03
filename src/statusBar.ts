@@ -323,9 +323,17 @@ export function showPacing(
   md.appendMarkdown(`| **Month Progress** | Day ${dayOfMonth} of ${
       daysInMonth} · ${timeLeft(daysRemaining)} |\n`);
   if (sessionUsed !== undefined) {
-    md.appendMarkdown(`| **This Session** | ${
-        sessionUsed === 0 ? `No ${unitLabel} yet` :
-                            `**${sessionUsed}** ${unitLabel}`} |\n`);
+    const tokensStr = result.sessionTokens && result.sessionTokens > 0 ?
+        ` (${fmt(result.sessionTokens)} tokens)` : '';
+    if (result.unlimited) {
+      md.appendMarkdown(`| **This Session** | ${
+          sessionUsed === 0 ? `No requests yet` :
+                              `**${fmt(sessionUsed)}** requests${tokensStr}`} |\n`);
+    } else {
+      md.appendMarkdown(`| **This Session** | ${
+          sessionUsed === 0 ? `No ${unitLabel} yet` :
+                              `**${fmt(sessionUsed)}** ${unitLabel}${tokensStr}`} |\n`);
+    }
   }
   md.appendMarkdown(`\n`);
 
