@@ -15,15 +15,7 @@ Supports **Individual**, **Business**, and **Enterprise** plans with zero config
 
 Short overview always visible in the status bar, with a rich tooltip for deep insights. Works out of the box using your existing GitHub sign-in in VS Code, or optionally via a Personal Access Token.
 
-<p align="center">
-  <img src="docs/screenshots/status_bar.png" alt="Copilot Tracer Status Bar" width="250" />
-</p>
-
 When hovering over the status bar item, you'll see a detailed daily budget report with ASCII bar charts comparing your base rate, average usage, and current allowance — plus insights on how you're pacing against your monthly limit.
-
-<p align="center">
-  <img src="docs/screenshots/big_view.png" alt="Copilot Tracer Big View" width="600" />
-</p>
 
 
 ---
